@@ -2,53 +2,42 @@ pipeline {
   agent any
 
   environment {
-    // Docker Hub
-    DOCKERHUB_CREDENTIALS = 'dockerhub-creds'
+    DOCKERHUB_CRED = 'dockerhub-creds'
     DOCKERHUB_USER = 'hsindhuja'
 
-    BACKEND_IMAGE  = 'hsindhuja/calculator-backend'
-    FRONTEND_IMAGE = 'hsindhuja/calculator-frontend'
+    BACKEND_IMAGE  = "${DOCKERHUB_USER}/calculator-backend"
+    FRONTEND_IMAGE = "${DOCKERHUB_USER}/calculator-frontend"
     TAG = "${BUILD_NUMBER}"
 
-    // Kubernetes
-    NAMESPACE = 'default'
-    BACKEND_DEPLOYMENT = 'calculator-backend'
-    FRONTEND_DEPLOYMENT = 'calculator-frontend'
-    BACKEND_CONTAINER = 'backend'
-    FRONTEND_CONTAINER = 'frontend'
+    K8S_NAMESPACE = "default"
+    BACKEND_DEPLOYMENT = "calculator-backend"
+    FRONTEND_DEPLOYMENT = "calculator-frontend"
+
+    BACKEND_CONTAINER = "backend"
+    FRONTEND_CONTAINER = "frontend"
   }
 
   stages {
-
-    stage('Checkout Code') {
-      steps {
-        git branch: 'main',
-            url: 'https://github.com/Hema8368/k8s-calculator.git'
-      }
+    stage('Checkout') {
+      steps { checkout scm }
     }
 
     stage('Build Docker Images') {
       steps {
         sh '''
-          docker build -t $BACKEND_IMAGE:$TAG ./backend
-          docker build -t $FRONTEND_IMAGE:$TAG ./frontend
+          docker build -t ${BACKEND_IMAGE}:${TAG} ./backend
+          docker build -t ${FRONTEND_IMAGE}:${TAG} ./frontend
         '''
       }
     }
 
-    stage('Docker Hub Login & Push') {
+    stage('Push to Docker Hub') {
       steps {
-        withCredentials([
-          usernamePassword(
-            credentialsId: "${DOCKERHUB_CREDENTIALS}",
-            usernameVariable: 'DH_USER',
-            passwordVariable: 'DH_PASS'
-          )
-        ]) {
+        withCredentials([usernamePassword(credentialsId: "${DOCKERHUB_CRED}", usernameVariable: 'DH_USER', passwordVariable: 'DH_PASS')]) {
           sh '''
             echo "$DH_PASS" | docker login -u "$DH_USER" --password-stdin
-            docker push $BACKEND_IMAGE:$TAG
-            docker push $FRONTEND_IMAGE:$TAG
+            docker push ${BACKEND_IMAGE}:${TAG}
+            docker push ${FRONTEND_IMAGE}:${TAG}
           '''
         }
       }
@@ -57,19 +46,21 @@ pipeline {
     stage('Deploy to Kubernetes') {
       steps {
         sh '''
-          kubectl apply -f k8s/
+          export KUBECONFIG=/var/jenkins_home/.kube/config
 
-          kubectl set image deployment/$BACKEND_DEPLOYMENT \
-            $BACKEND_CONTAINER=$BACKEND_IMAGE:$TAG -n $NAMESPACE
+          kubectl apply -n ${K8S_NAMESPACE} -f k8s/ --validate=false
 
-          kubectl set image deployment/$FRONTEND_DEPLOYMENT \
-            $FRONTEND_CONTAINER=$FRONTEND_IMAGE:$TAG -n $NAMESPACE
+          kubectl set image -n ${K8S_NAMESPACE} deployment/${BACKEND_DEPLOYMENT} \
+            ${BACKEND_CONTAINER}=${BACKEND_IMAGE}:${TAG}
 
-          kubectl rollout status deployment/$BACKEND_DEPLOYMENT -n $NAMESPACE
-          kubectl rollout status deployment/$FRONTEND_DEPLOYMENT -n $NAMESPACE
+          kubectl set image -n ${K8S_NAMESPACE} deployment/${FRONTEND_DEPLOYMENT} \
+            ${FRONTEND_CONTAINER}=${FRONTEND_IMAGE}:${TAG}
 
-          kubectl get pods -n $NAMESPACE
-          kubectl get svc -n $NAMESPACE
+          kubectl rollout status -n ${K8S_NAMESPACE} deployment/${BACKEND_DEPLOYMENT} --timeout=180s
+          kubectl rollout status -n ${K8S_NAMESPACE} deployment/${FRONTEND_DEPLOYMENT} --timeout=180s
+
+          kubectl get pods -n ${K8S_NAMESPACE} -o wide
+          kubectl get svc -n ${K8S_NAMESPACE}
         '''
       }
     }
